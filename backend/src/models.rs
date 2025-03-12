@@ -17,10 +17,13 @@ pub struct Todo {
     pub user_id: i32,
 }
 
-#[derive(Debug, Deserialize)]
+// Update NewTodo to make user_id optional
+#[derive(Deserialize)]
 pub struct NewTodo {
     pub title: String,
-    pub user_id: i32,
+    pub completed: Option<bool>, // Make completed optional with default false
+    #[serde(skip)] // Skip this field when deserializing from JSON
+    pub user_id: Option<i32>, // This will no longer come from the request
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,4 +42,10 @@ pub struct RegisterPayload {
 pub struct LoginPayload {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct TodoQueryParams {
+    pub completed: Option<bool>,
+    pub search: Option<String>,
 }

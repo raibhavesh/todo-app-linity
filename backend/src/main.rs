@@ -1,3 +1,4 @@
+//// filepath: /home/shivtriv/todo-app-linity/backend/src/main.rs
 use axum::{
     routing::{get, post, put, delete},
     Router,
@@ -9,8 +10,6 @@ use tokio;
 use dotenvy::dotenv;
 use anyhow::Result;
 use db::connect_to_db;
-//use sqlx::Pool;
-//use crate::auth::require_auth;
 
 mod db;
 mod models;
@@ -25,10 +24,15 @@ async fn main() -> Result<()> {
 
     println!("Successfully connected to the database!");
 
+    // Update sequences to avoid primary key conflicts
     sqlx::query("SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))")
         .execute(&pool)
         .await?;
     
+    sqlx::query("SELECT setval('todos_id_seq', (SELECT MAX(id) FROM todos))")
+        .execute(&pool)
+        .await?;
+
     // Public routes that don't require authentication
     let public_routes = Router::new()
         .route("/register", post(handlers::register_handler))
@@ -36,18 +40,11 @@ async fn main() -> Result<()> {
 
     // Protected routes that require authentication
     let protected_routes = Router::new()
-        .route(
-            "/todos",
-            get(handlers::get_all_todos_handler)
-                .post(handlers::create_todo_handler),
-        )
-        .route(
-            "/todos/:id",
-            get(handlers::get_todo_handler)
-                .put(handlers::update_todo_handler)
-                .delete(handlers::delete_todo_handler),
-        )
-        // Apply the authentication middleware to all routes in this group
+        .route("/todos", get(handlers::get_all_todos_handler)
+                        .post(handlers::create_todo_handler))
+        .route("/todos/:id", get(handlers::get_todo_handler)
+                            .put(handlers::update_todo_handler)
+                            .delete(handlers::delete_todo_handler))
         .layer(middleware::from_fn(auth::require_auth));
 
     // Combine the routes

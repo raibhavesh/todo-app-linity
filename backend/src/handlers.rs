@@ -1,6 +1,5 @@
-//// filepath: /home/shivtriv/todo-app-linity/backend/src/handlers.rs
 use axum::{
-    extract::{Extension,Path},
+    extract::{Extension, Path,Query},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -8,40 +7,113 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use sqlx::Pool;
 use sqlx::Postgres;
-use crate::models::{Todo, NewTodo,UpdateTodo,RegisterPayload,LoginPayload};
+use crate::models::{Todo, NewTodo, UpdateTodo, RegisterPayload, LoginPayload,TodoQueryParams};
 use crate::models::User;
 use bcrypt::verify;
 use crate::auth;
-//use crate::auth::AuthenticatedUser;
+use crate::auth::AuthenticatedUser;
 use serde_json::json;
 
+// Update get_all_todos_handler to support filtering
 pub async fn get_all_todos_handler(
     Extension(pool): Extension<Pool<Postgres>>,
+    Extension(auth_user): Extension<AuthenticatedUser>,
+    Query(params): Query<TodoQueryParams>, // Add this parameter
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Fetch all todos from the database and map errors to a proper status code.
-    let todos = sqlx::query_as::<_, Todo>("SELECT id, title, completed, user_id FROM todos")
-        //.bind(&auth_user.username)
-        .fetch_all(&pool)
-        .await
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("DB Error: {}", err),
+    // Choose the appropriate SQL based on the query parameters
+    let todos = match (params.completed, &params.search) {
+        // Case 1: Both completed and search are provided
+        (Some(completed), Some(search)) => {
+            sqlx::query_as::<_, Todo>(
+                "SELECT t.id, t.title, t.completed, t.user_id 
+                 FROM todos t
+                 JOIN users u ON t.user_id = u.id
+                 WHERE u.username = $1 AND t.completed = $2 AND t.title ILIKE '%' || $3 || '%'"
             )
-        })?;
+            .bind(&auth_user.username)
+            .bind(completed)
+            .bind(search)
+            .fetch_all(&pool)
+            .await
+        },
+        
+        // Case 2: Only completed filter is provided
+        (Some(completed), None) => {
+            sqlx::query_as::<_, Todo>(
+                "SELECT t.id, t.title, t.completed, t.user_id 
+                 FROM todos t
+                 JOIN users u ON t.user_id = u.id
+                 WHERE u.username = $1 AND t.completed = $2"
+            )
+            .bind(&auth_user.username)
+            .bind(completed)
+            .fetch_all(&pool)
+            .await
+        },
+        
+        // Case 3: Only search filter is provided
+        (None, Some(search)) => {
+            sqlx::query_as::<_, Todo>(
+                "SELECT t.id, t.title, t.completed, t.user_id 
+                 FROM todos t
+                 JOIN users u ON t.user_id = u.id
+                 WHERE u.username = $1 AND t.title ILIKE '%' || $2 || '%'"
+            )
+            .bind(&auth_user.username)
+            .bind(search)
+            .fetch_all(&pool)
+            .await
+        },
+        
+        // Case 4: No filters provided
+        (None, None) => {
+            sqlx::query_as::<_, Todo>(
+                "SELECT t.id, t.title, t.completed, t.user_id 
+                 FROM todos t
+                 JOIN users u ON t.user_id = u.id
+                 WHERE u.username = $1"
+            )
+            .bind(&auth_user.username)
+            .fetch_all(&pool)
+            .await
+        },
+    }
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB Error: {}", err),
+        )
+    })?;
 
     Ok(Json(todos))
 }
 
 pub async fn create_todo_handler(
     Extension(pool): Extension<Pool<Postgres>>,
+    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Json
     Json(payload): Json<NewTodo>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // First get the user_id for the authenticated user
+    let user_id = sqlx::query_scalar::<_, i32>("SELECT id FROM users WHERE username = $1")
+    .bind(&auth_user.username)
+    .fetch_one(&pool)
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("User lookup error: {}", err),
+        )
+    })?;
+
+    // Then use user_id directly in your next query
     let inserted_todo = sqlx::query_as::<_, Todo>(
-        "INSERT INTO todos (title, completed, user_id) VALUES ($1, false, $2) RETURNING id, title, completed, user_id"
+        "INSERT INTO todos (title, completed, user_id) 
+        VALUES ($1, $2, $3) 
+        RETURNING id, title, completed, user_id"
     )
-    .bind(payload.title)
-    .bind(payload.user_id)
+    .bind(&payload.title)
+    .bind(payload.completed.unwrap_or(false))
+    .bind(user_id)  // Use the id directly instead of user.id
     .fetch_one(&pool)
     .await
     .map_err(|err| {
@@ -56,64 +128,85 @@ pub async fn create_todo_handler(
 
 pub async fn update_todo_handler(
     Extension(pool): Extension<Pool<Postgres>>,
+    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Path
     Path(id): Path<i32>,
     Json(payload): Json<UpdateTodo>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Using COALESCE to update only fields provided; if not provided, keep existing values.
+    // Update the todo only if it belongs to the authenticated user
     let updated_todo = sqlx::query_as::<_, Todo>(
-        "UPDATE todos SET title = COALESCE($1, title), completed = COALESCE($2, completed)
-         WHERE id = $3
-         RETURNING id, title, completed, user_id"
+        "UPDATE todos t
+         SET title = COALESCE($1, t.title),
+             completed = COALESCE($2, t.completed)
+         FROM users u
+         WHERE t.id = $3 
+         AND t.user_id = u.id
+         AND u.username = $4
+         RETURNING t.id, t.title, t.completed, t.user_id"
     )
     .bind(payload.title)
     .bind(payload.completed)
     .bind(id)
-    .fetch_one(&pool)
+    .bind(&auth_user.username)
+    .fetch_optional(&pool)
     .await
     .map_err(|err| (
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("DB Error: {}", err),
     ))?;
 
-    Ok(Json(updated_todo))
+    match updated_todo {
+        Some(todo) => Ok(Json(todo)),
+        None => Err((StatusCode::NOT_FOUND, format!("Todo with id {} not found or not owned by you", id)))
+    }
 }
 
+// Update delete_todo_handler to only delete user's todo
 pub async fn delete_todo_handler(
     Extension(pool): Extension<Pool<Postgres>>,
+    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Path
     Path(id): Path<i32>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Execute a DELETE query on the todos table for the given id.
-    let result = sqlx::query("DELETE FROM todos WHERE id = $1")
-        .bind(id)
-        .execute(&pool)
-        .await
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("DB Error: {}", err),
-            )
-        })?;
+    // Delete the todo only if it belongs to the authenticated user
+    let result = sqlx::query(
+        "DELETE FROM todos t
+         USING users u
+         WHERE t.id = $1 
+         AND t.user_id = u.id
+         AND u.username = $2"
+    )
+    .bind(id)
+    .bind(&auth_user.username)
+    .execute(&pool)
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB Error: {}", err),
+        )
+    })?;
 
-    // Check if any row was deleted; if not, return a 404 error.
     if result.rows_affected() == 0 {
-        Err((
-            StatusCode::NOT_FOUND,
-            format!("Todo with ID {} not found", id),
-        ))
+        Err((StatusCode::NOT_FOUND, format!("Todo with id {} not found or not owned by you", id)))
     } else {
-        // Return 204 No Content on success.
         Ok(StatusCode::NO_CONTENT)
     }
 }
 
+// Update get_todo_handler to only return user's todo
 pub async fn get_todo_handler(
-    Path(id): Path<i32>, // use i32 instead of u32
     Extension(pool): Extension<Pool<Postgres>>,
+    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Path
+    Path(id): Path<i32>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Only get the todo if it belongs to the authenticated user
     let todo = sqlx::query_as::<_, Todo>(
-        "SELECT id, title, completed, user_id FROM todos WHERE id = $1"
+        "SELECT t.id, t.title, t.completed, t.user_id 
+         FROM todos t
+         JOIN users u ON t.user_id = u.id
+         WHERE t.id = $1 AND u.username = $2"
     )
     .bind(id)
+    .bind(&auth_user.username)
     .fetch_optional(&pool)
     .await
     .map_err(|err| {

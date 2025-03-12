@@ -51,9 +51,9 @@ pub fn verify_jwt(token: &str) -> Result<TokenData<Claims>, jsonwebtoken::errors
 
 // Auth middleware function
 pub async fn require_auth<B>(
-    req: Request<B>, 
+    mut req: Request<B>, 
     next: Next<B>
-) -> Result<Response<BoxBody>, StatusCode>  // Use BoxBody as the generic parameter
+) -> Result<Response<BoxBody>, StatusCode>
 where
     B: Send,
 {
@@ -71,7 +71,11 @@ where
 
     if let Some(token) = auth_header {
         match verify_jwt(token) {
-            Ok(_) => {
+            Ok(token_data) => {
+                // Extract the username from token and add to request extensions
+                req.extensions_mut().insert(AuthenticatedUser {
+                    username: token_data.claims.sub,
+                });
                 let response = next.run(req).await;
                 Ok(response)
             },
