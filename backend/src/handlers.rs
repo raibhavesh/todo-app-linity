@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Extension, Path,Query},
+    extract::{Extension, Path, Query},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -7,20 +7,35 @@ use axum::{
 use bcrypt::{hash, DEFAULT_COST};
 use sqlx::Pool;
 use sqlx::Postgres;
-use crate::models::{Todo, NewTodo, UpdateTodo, RegisterPayload, LoginPayload,TodoQueryParams};
-use crate::models::User;
+use crate::models::{Todo, NewTodo, UpdateTodo, RegisterPayload, LoginPayload, TodoQueryParams, TokenResponse, User};
 use bcrypt::verify;
 use crate::auth;
 use crate::auth::AuthenticatedUser;
 use serde_json::json;
 
-// Update get_all_todos_handler to support filtering
+/// Get all todos for the authenticated user
+/// 
+/// Filter todos by completed status and search by title
+#[utoipa::path(
+    get,
+    path = "/todos",
+    params(
+        TodoQueryParams
+    ),
+    responses(
+        (status = 200, description = "List of todos", body = [Todo]),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 pub async fn get_all_todos_handler(
     Extension(pool): Extension<Pool<Postgres>>,
     Extension(auth_user): Extension<AuthenticatedUser>,
-    Query(params): Query<TodoQueryParams>, // Add this parameter
+    Query(params): Query<TodoQueryParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Choose the appropriate SQL based on the query parameters
     let todos = match (params.completed, &params.search) {
         // Case 1: Both completed and search are provided
         (Some(completed), Some(search)) => {
@@ -88,32 +103,46 @@ pub async fn get_all_todos_handler(
     Ok(Json(todos))
 }
 
+/// Create a new todo
+#[utoipa::path(
+    post,
+    path = "/todos",
+    request_body = NewTodo,
+    responses(
+        (status = 200, description = "Todo created successfully", body = Todo),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 pub async fn create_todo_handler(
     Extension(pool): Extension<Pool<Postgres>>,
-    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Json
+    Extension(auth_user): Extension<AuthenticatedUser>,
     Json(payload): Json<NewTodo>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // First get the user_id for the authenticated user
     let user_id = sqlx::query_scalar::<_, i32>("SELECT id FROM users WHERE username = $1")
-    .bind(&auth_user.username)
-    .fetch_one(&pool)
-    .await
-    .map_err(|err| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("User lookup error: {}", err),
-        )
-    })?;
+        .bind(&auth_user.username)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("User lookup error: {}", err),
+            )
+        })?;
 
-    // Then use user_id directly in your next query
+    // Now create the todo associated with this user
     let inserted_todo = sqlx::query_as::<_, Todo>(
         "INSERT INTO todos (title, completed, user_id) 
-        VALUES ($1, $2, $3) 
-        RETURNING id, title, completed, user_id"
+         VALUES ($1, $2, $3) 
+         RETURNING id, title, completed, user_id"
     )
     .bind(&payload.title)
     .bind(payload.completed.unwrap_or(false))
-    .bind(user_id)  // Use the id directly instead of user.id
+    .bind(user_id)
     .fetch_one(&pool)
     .await
     .map_err(|err| {
@@ -126,9 +155,74 @@ pub async fn create_todo_handler(
     Ok(Json(inserted_todo))
 }
 
+/// Get a specific todo by ID
+#[utoipa::path(
+    get,
+    path = "/todos/{id}",
+    params(
+        ("id" = i32, Path, description = "Todo ID")
+    ),
+    responses(
+        (status = 200, description = "Todo found", body = Todo),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Todo not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
+pub async fn get_todo_handler(
+    Extension(pool): Extension<Pool<Postgres>>,
+    Extension(auth_user): Extension<AuthenticatedUser>,
+    Path(id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Only get the todo if it belongs to the authenticated user
+    let todo = sqlx::query_as::<_, Todo>(
+        "SELECT t.id, t.title, t.completed, t.user_id 
+         FROM todos t
+         JOIN users u ON t.user_id = u.id
+         WHERE t.id = $1 AND u.username = $2"
+    )
+    .bind(id)
+    .bind(&auth_user.username)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", err),
+        )
+    })?;
+
+    if let Some(todo) = todo {
+        Ok(Json(todo))
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("Todo with id {} not found", id)))
+    }
+}
+
+/// Update a todo
+#[utoipa::path(
+    put,
+    path = "/todos/{id}",
+    params(
+        ("id" = i32, Path, description = "Todo ID")
+    ),
+    request_body = UpdateTodo,
+    responses(
+        (status = 200, description = "Todo updated successfully", body = Todo),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Todo not found or not owned by you"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 pub async fn update_todo_handler(
     Extension(pool): Extension<Pool<Postgres>>,
-    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Path
+    Extension(auth_user): Extension<AuthenticatedUser>,
     Path(id): Path<i32>,
     Json(payload): Json<UpdateTodo>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
@@ -160,10 +254,26 @@ pub async fn update_todo_handler(
     }
 }
 
-// Update delete_todo_handler to only delete user's todo
+/// Delete a todo
+#[utoipa::path(
+    delete,
+    path = "/todos/{id}",
+    params(
+        ("id" = i32, Path, description = "Todo ID")
+    ),
+    responses(
+        (status = 204, description = "Todo deleted successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Todo not found or not owned by you"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 pub async fn delete_todo_handler(
     Extension(pool): Extension<Pool<Postgres>>,
-    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Path
+    Extension(auth_user): Extension<AuthenticatedUser>,
     Path(id): Path<i32>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Delete the todo only if it belongs to the authenticated user
@@ -192,37 +302,16 @@ pub async fn delete_todo_handler(
     }
 }
 
-// Update get_todo_handler to only return user's todo
-pub async fn get_todo_handler(
-    Extension(pool): Extension<Pool<Postgres>>,
-    Extension(auth_user): Extension<AuthenticatedUser>,  // Move before Path
-    Path(id): Path<i32>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Only get the todo if it belongs to the authenticated user
-    let todo = sqlx::query_as::<_, Todo>(
-        "SELECT t.id, t.title, t.completed, t.user_id 
-         FROM todos t
-         JOIN users u ON t.user_id = u.id
-         WHERE t.id = $1 AND u.username = $2"
+/// Register a new user
+#[utoipa::path(
+    post,
+    path = "/register",
+    request_body = RegisterPayload,
+    responses(
+        (status = 200, description = "User registered successfully", body = User),
+        (status = 500, description = "Internal server error")
     )
-    .bind(id)
-    .bind(&auth_user.username)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|err| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", err),
-        )
-    })?;
-
-    if let Some(todo) = todo {
-        Ok(Json(todo))
-    } else {
-        Err((StatusCode::NOT_FOUND, format!("Todo with id {} not found", id)))
-    }
-}
-
+)]
 pub async fn register_handler(
     Extension(pool): Extension<Pool<Postgres>>,
     Json(payload): Json<RegisterPayload>,
@@ -251,9 +340,20 @@ pub async fn register_handler(
         )
     })?;
     
-    Ok(axum::Json(user))
+    Ok(Json(user))
 }
 
+/// Login a user and get authentication token
+#[utoipa::path(
+    post,
+    path = "/login",
+    request_body = LoginPayload,
+    responses(
+        (status = 200, description = "Login successful", body = TokenResponse),
+        (status = 401, description = "Invalid credentials"),
+        (status = 500, description = "Internal server error")
+    )
+)]
 pub async fn login_handler(
     Extension(pool): Extension<Pool<Postgres>>,
     Json(payload): Json<LoginPayload>,
@@ -288,7 +388,7 @@ pub async fn login_handler(
                 )
             })?;
             // Return the token as JSON.
-            Ok(axum::Json(json!({ "token": token })))
+            Ok(Json(json!({ "token": token })))
         } else {
             Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))
         }
