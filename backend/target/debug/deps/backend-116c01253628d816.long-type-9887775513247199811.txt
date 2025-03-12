@@ -1,0 +1,1 @@
+fn(Extension<Pool<Postgres>>) -> impl Future<Output = Result<axum::Json<Vec<Todo>>, (StatusCode, std::string::String)>> {get_all_todos_handler}
