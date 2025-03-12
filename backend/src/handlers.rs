@@ -5,15 +5,22 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use bcrypt::{hash, DEFAULT_COST};
 use sqlx::Pool;
 use sqlx::Postgres;
-use crate::models::{Todo, NewTodo,UpdateTodo};
+use crate::models::{Todo, NewTodo,UpdateTodo,RegisterPayload,LoginPayload};
+use crate::models::User;
+use bcrypt::verify;
+use crate::auth;
+//use crate::auth::AuthenticatedUser;
+use serde_json::json;
 
 pub async fn get_all_todos_handler(
     Extension(pool): Extension<Pool<Postgres>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Fetch all todos from the database and map errors to a proper status code.
     let todos = sqlx::query_as::<_, Todo>("SELECT id, title, completed, user_id FROM todos")
+        //.bind(&auth_user.username)
         .fetch_all(&pool)
         .await
         .map_err(|err| {
@@ -120,5 +127,79 @@ pub async fn get_todo_handler(
         Ok(Json(todo))
     } else {
         Err((StatusCode::NOT_FOUND, format!("Todo with id {} not found", id)))
+    }
+}
+
+pub async fn register_handler(
+    Extension(pool): Extension<Pool<Postgres>>,
+    Json(payload): Json<RegisterPayload>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Hash the password using bcrypt.
+    let hashed_password = hash(payload.password, DEFAULT_COST).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Password hashing error: {}", err),
+        )
+    })?;
+    
+    // Insert the user into the database, returning the new user.
+    let user = sqlx::query_as::<_, User>(
+        "INSERT INTO users (username, password) VALUES ($1, $2)
+         RETURNING id, username, password"
+    )
+    .bind(payload.username)
+    .bind(hashed_password)
+    .fetch_one(&pool)
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB Error: {}", err),
+        )
+    })?;
+    
+    Ok(axum::Json(user))
+}
+
+pub async fn login_handler(
+    Extension(pool): Extension<Pool<Postgres>>,
+    Json(payload): Json<LoginPayload>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Retrieve the user by username.
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, username, password FROM users WHERE username = $1"
+    )
+    .bind(&payload.username)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", err),
+        )
+    })?;
+    
+    if let Some(user) = user {
+        // Verify the user's password against the stored hashed password.
+        let is_valid = verify(&payload.password, &user.password).map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Password verification error: {}", err),
+            )
+        })?;
+        if is_valid {
+            let token = auth::create_jwt(&user.username).map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Token creation error: {}", err),
+                )
+            })?;
+            // Return the token as JSON.
+            Ok(axum::Json(json!({ "token": token })))
+        } else {
+            Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))
+        }
+    } else {
+        Err((StatusCode::UNAUTHORIZED, "User not found".to_string()))
     }
 }
