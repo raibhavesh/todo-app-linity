@@ -3,9 +3,7 @@ import type { paths } from './types/api';
 
 let authToken: string | null = null;
 
-// A helper function returning a plain object (Record<string, string>)
-function dynamicHeaders(): Record<string, string> {
-  // Always return an object, not a union
+export function dynamicHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
@@ -15,7 +13,8 @@ function dynamicHeaders(): Record<string, string> {
 
 const api = createFetch<paths>({
   baseUrl: 'http://localhost:3001',
-  headers: dynamicHeaders() // Pass the function reference
+  // Initialize with no token.
+  headers: {} 
 });
 
 export const setAuthToken = (token: string) => {
@@ -35,7 +34,6 @@ export const clearAuthToken = () => {
   localStorage.removeItem('auth_token');
 };
 
-// Initialize token from localStorage on load (client-side only)
 if (typeof window !== 'undefined') {
   getAuthToken();
 }

@@ -2,7 +2,7 @@
 
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import { useRouter } from 'next/navigation';
-import api, { setAuthToken, clearAuthToken, getAuthToken } from '../lib/api';
+import api, { setAuthToken, getAuthToken, clearAuthToken } from '../lib/api';
 
 type User = {
   id: number;
@@ -20,100 +20,84 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Initialize user state from localStorage so that refresh keeps the login state.
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(() => {
+    if (typeof window !== 'undefined') {
+      const storedUser = localStorage.getItem('auth_user');
+      return storedUser ? JSON.parse(storedUser) : null;
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  // On mount, load the token and user from localStorage
+  // Restore token from localStorage into our module variable.
   useEffect(() => {
-    const token = getAuthToken(); // retrieves token from localStorage
-    if (!token) {
-      setLoading(false);
-      return;
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      // Ensure that our in-memory token variable is set.
+      // (getAuthToken() does this if it's null)
+      getAuthToken();
     }
-
-    const storedUser = localStorage.getItem('auth_user');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
-    setLoading(false);
   }, []);
 
-  // Login
   const login = async (username: string, password: string) => {
-    setError(null);
     setLoading(true);
+    setError(null);
     try {
-        const result = await api.POST('/login', {
-            body: { username, password },
-        });
-      // The backend returns just { "token": "..." }
+      const result = await api.POST('/login', {
+        body: { username, password },
+      });
       if (result.data?.token) {
         setAuthToken(result.data.token);
-        // Since we only have the token, create a minimal user object
-        const minimalUser: User = {
-          id: -1, // Dummy ID (we don't get an ID from /login)
-          username: username,
-        };
-        localStorage.setItem('auth_user', JSON.stringify(minimalUser));
+        const minimalUser: User = { id: -1, username };
         setUser(minimalUser);
-
+        localStorage.setItem('auth_user', JSON.stringify(minimalUser));
         router.push('/');
       } else {
         setError('Invalid login response');
       }
     } catch (err) {
+      console.error('Login error:', err);
       setError('Login failed');
     } finally {
       setLoading(false);
     }
   };
 
-  // Signup
   const signup = async (username: string, password: string) => {
-    setError(null);
     setLoading(true);
+    setError(null);
     try {
-      // 1) Call /register => returns a full user object
-      const registerResult = await api.POST('/register', {
+      const result = await api.POST('/register', {
         body: { username, password },
       });
-      if (!registerResult.data?.id) {
-        setError('Invalid register response');
-        setLoading(false);
-        return;
-      }
-
-      // 2) Immediately call /login to get the token
-      const loginResult = await api.POST('/login', {
-        body: { username, password },
-      });
-
-      if (loginResult.data?.token) {
-        setAuthToken(loginResult.data.token);
-
-        // We have the user from /register
-        const newUser: User = {
-          id: registerResult.data.id,
-          username: registerResult.data.username,
-        };
-        localStorage.setItem('auth_user', JSON.stringify(newUser));
-        setUser(newUser);
-
-        router.push('/');
+      if (result.data) {
+        const loginResult = await api.POST('/login', {
+          body: { username, password },
+        });
+        if (loginResult.data?.token) {
+          setAuthToken(loginResult.data.token);
+          const minimalUser: User = { id: result.data.id, username };
+          setUser(minimalUser);
+          localStorage.setItem('auth_user', JSON.stringify(minimalUser));
+          router.push('/');
+        } else {
+          setError('Signup succeeded but login failed. Please try logging in.');
+        }
       } else {
-        setError('Failed to log in after signup');
+        setError('Signup failed: Invalid server response');
       }
     } catch (err) {
+      console.error('Signup error:', err);
       setError('Signup failed');
     } finally {
       setLoading(false);
     }
   };
 
-  // Logout
   const logout = () => {
     clearAuthToken();
     localStorage.removeItem('auth_user');
