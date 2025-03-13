@@ -9,7 +9,10 @@ type PluginAPI = {
 };
 
 const config = {
-    content: ['./src/components/**/*.{js,ts,jsx,tsx,mdx}', './src/app/**/*.{js,ts,jsx,tsx,mdx}'],
+    content: [
+        './app/**/*.{js,ts,jsx,tsx,mdx}',
+        './components/**/*.{js,ts,jsx,tsx,mdx}'
+    ],
     theme: {
         screens: {
             desktop: '1680px',
