@@ -3,7 +3,7 @@
 ```bash
    cargo run
    ```
-- http://127.0.0.1:3001/api-docs/openapi.json
+- http://127.0.0.1:3001/api-docs/openapi.json  
 {
   "openapi": "3.0.3",
   "info": {
