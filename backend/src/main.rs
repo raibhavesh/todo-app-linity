@@ -13,6 +13,8 @@ use db::connect_to_db;
 // Import utoipa and SwaggerUi
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+use tower_http::cors::{CorsLayer, Any};
+use axum::http::HeaderValue;
 
 mod db;
 mod models;
@@ -101,7 +103,17 @@ async fn main() -> Result<()> {
     .route("/api-docs/openapi.json", get(serve_openapi))
     .layer(Extension(pool));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+
+    // Add CORS layer here
+    let cors = CorsLayer::new()
+    .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
+    .allow_methods(Any)
+    .allow_headers(Any);
+
+    // Update app with the CORS layer
+    let app = app.layer(cors);
+    
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
     println!("Server running at http://{}", addr);
     println!("API Documentation (OpenAPI JSON) available at http://{}/api-docs/openapi.json", addr);
     axum::Server::bind(&addr)
