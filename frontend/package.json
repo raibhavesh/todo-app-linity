@@ -10,7 +10,8 @@
     "generate-api": "openapi-typescript http://localhost:3001/api-docs/openapi.json --output src/types/api.ts"
   },
   "dependencies": {
-    "next": "15.2.2",
+    "frontend": "file:",
+    "next": "^15.3.0",
     "openapi-fetch": "^0.13.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

@@ -12,7 +12,7 @@ export function dynamicHeaders(): Record<string, string> {
 }
 
 const api = createFetch<paths>({
-  baseUrl: 'http://localhost:3001',
+  baseUrl: 'http://3.87.187.16:3001',
   // Initialize with no token.
   headers: {} 
 });
